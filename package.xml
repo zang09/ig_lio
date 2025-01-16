@@ -63,7 +63,11 @@
   <build_export_depend>livox_ros_driver</build_export_depend>
   <exec_depend>livox_ros_driver</exec_depend>
 
-
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_generation</exec_depend>
+  <build_depend>message_runtime</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+  
   <!-- The export tag contains other, unspecified, tags -->
   <export>
     <!-- Other tools can request additional information be placed here -->

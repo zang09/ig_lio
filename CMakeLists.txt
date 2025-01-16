@@ -18,6 +18,7 @@ find_package(catkin REQUIRED COMPONENTS
   roslib
   pcl_ros
   livox_ros_driver
+  message_generation
 )
 
 ## System dependencies are found with CMake's conventions
@@ -31,15 +32,19 @@ include(cmake/glog.cmake)
 # sophus
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/sophus)
 
-catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES gicp_lio
-#  CATKIN_DEPENDS roscpp rospy std_msgs
-#  DEPENDS system_lib
+add_service_files(
+  DIRECTORY srv
+  FILES
+  save_map.srv
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
 )
 
 include_directories(
-  include 
+  include
 )
 
 include_directories(SYSTEM
