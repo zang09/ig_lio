@@ -18,6 +18,9 @@
 #include "ig_lio/pointcloud_preprocess.h"
 #include "ig_lio/timer.h"
 
+// ROS service
+#include "ig_lio/save_map.h"
+
 namespace fs = boost::filesystem;
 
 LidarType lidar_type = LidarType::LIVOX;
@@ -44,14 +47,17 @@ ros::Publisher odom_pub;
 ros::Publisher current_scan_pub;
 ros::Publisher keyframe_scan_pub;
 ros::Publisher path_pub;
+ros::ServiceServer savemap_srv;
 nav_msgs::Path path_array;
 
 Timer timer;
 std::shared_ptr<PointCloudPreprocess> cloud_preprocess_ptr;
 SensorMeasurement sensor_measurement;
 std::shared_ptr<LIO> lio_ptr;
+CloudPtr global_cloud;
 pcl::VoxelGrid<PointType> voxel_filter;
 std::fstream odom_stream;
+fs::path pcd_path;
 
 void ImuCallBack(const sensor_msgs::Imu::ConstPtr& msg_ptr) {
   static double last_imu_timestamp = 0.0;
@@ -357,6 +363,30 @@ bool SyncMeasurements() {
   return true;
 }
 
+bool saveMapService(ig_lio::save_mapRequest& req, ig_lio::save_mapResponse& res)
+{
+  std::string saveMapDirectory;
+
+  std::cout << "****************************************************" << std::endl;
+  std::cout << "Saving map to pcd files ..." << std::endl;
+  if(req.destination.empty()) saveMapDirectory = ros::package::getPath("ig_lio") + "/result";
+  else saveMapDirectory = ros::package::getPath("ig_lio") + req.destination;
+  std::cout << "Save destination: " << saveMapDirectory << std::endl;
+
+  // create directory
+  system((std::string("mkdir -p ") + saveMapDirectory).c_str());
+  
+  int ret = pcl::io::savePCDFileBinary(saveMapDirectory + "/GlobalMap.pcd", *global_cloud);
+  // voxel_filter.filter(*global_cloud);
+  // ret += pcl::io::savePCDFileBinary(saveMapDirectory + "/GlobalMap_DS.pcd", *global_cloud);
+  res.success = ret == 0;
+
+  std::cout << "****************************************************" << std::endl;
+  std::cout << "Saving map to pcd files completed\n" << std::endl;
+
+  return true;
+}
+
 // The main process of iG-LIO
 void Process() {
   // Step 1: Time synchronization
@@ -400,7 +430,7 @@ void Process() {
     return;
   }
 
-  // Setp 4: Measurement Update
+  // Step 4: Measurement Update
   timer.Evaluate([&] { lio_ptr->MeasurementUpdate(sensor_measurement); },
                  "measurement update");
 
@@ -411,8 +441,9 @@ void Process() {
             << " bg_norm: " << lio_ptr->GetCurrentBg().norm() * 180.0 / M_PI
             << std::endl;
 
-  // Setp 5: Send to rviz for visualization
+  // Step 5: Send to rviz for visualization
   Eigen::Matrix4d result_pose = lio_ptr->GetCurrentPose();
+  
   // odometry message
   nav_msgs::Odometry odom_msg;
   odom_msg.header.frame_id = "world";
@@ -426,16 +457,18 @@ void Process() {
   odom_msg.pose.pose.position.y = result_pose(1, 3);
   odom_msg.pose.pose.position.z = result_pose(2, 3);
   odom_pub.publish(odom_msg);
+  
   // tf message
   static tf::TransformBroadcaster tf_broadcaster;
   tf::Quaternion q_tf(temp_q.x(), temp_q.y(), temp_q.z(), temp_q.w());
   tf::Vector3 t_tf(result_pose(0, 3), result_pose(1, 3), result_pose(2, 3));
-  tf_broadcaster.sendTransform(tf::StampedTransform(
-      tf::Transform(q_tf, t_tf), odom_msg.header.stamp, "world", "base_link"));
+  tf_broadcaster.sendTransform(tf::StampedTransform(tf::Transform(q_tf, t_tf), odom_msg.header.stamp, "world", "base_link"));
+  
   // publish dense scan
   CloudPtr trans_cloud(new CloudType());
-  pcl::transformPointCloud(
-      *sensor_measurement.cloud_ptr_, *trans_cloud, result_pose);
+  pcl::transformPointCloud(*sensor_measurement.cloud_ptr_, *trans_cloud, result_pose);
+  *global_cloud += *trans_cloud;
+
   sensor_msgs::PointCloud2 scan_msg;
   pcl::toROSMsg(*trans_cloud, scan_msg);
   scan_msg.header.frame_id = "world";
@@ -483,49 +516,18 @@ void Process() {
     path_pub.publish(path_array);
   }
 
-  // Setp 6: Save trajectory for evo evaluation
-  static size_t delay_count = 0;
-  if (delay_count > 50) {
-    // normal (for NCLT, AVIA dataset)
-    Eigen::Matrix4d lio_pose = result_pose;
-
-    // // newer college
-    // // The ground turth is in the camera frame
-    // // clang-format off
-    // Eigen::Matrix4d T_imu_cam;
-    // T_imu_cam <<
-    //   0.70992163, 0.02460003, 0.70385092, 0.04249269,
-    //   -0.70414167, 0.00493623, 0.71004236, 0.06466842,
-    //   0.01399269, -0.99968519,  0.02082624, -0.01845775,
-    //   0, 0, 0, 1;
-    // // clang-format on
-    // Eigen::Matrix4d lio_pose = result_pose * T_imu_cam;
-
-    // botian graden
-    // The ground turth is in the velodyne frame:
-    // 1. if use livox, please uncomment below extrinsics conversion
-    // Eigen::Matrix4d T_bmi088_velodyne;
-    // // clang-format off
-    // T_bmi088_velodyne << 0.999719900795050, 0.021250293957184,
-    // 0.010369165229080,
-    //     -0.035251075432380, -0.021115170891513, 0.999693088316336,
-    //     -0.012938293597011, 0.029257546097129, -0.010640917363274,
-    //     0.012715836666423, 0.999862162753536, 0.148908460351328,
-    //     0, 0, 0, 1.0;
-    // // clang-format on
-    // Eigen::Matrix4d lio_pose = result_pose * T_bmi088_velodyne;
-    // // 2.if use velodyne, please uncomment below extrinsics conversion
-    // Eigen::Matrix4d lio_pose = result_pose * T_imu_lidar;
-
-    Eigen::Quaterniond lio_q(lio_pose.block<3, 3>(0, 0));
-    odom_stream << std::fixed << std::setprecision(6)
-                << sensor_measurement.lidar_end_time_ << " "
-                << std::setprecision(15) << lio_pose(0, 3) << " "
-                << lio_pose(1, 3) << " " << lio_pose(2, 3) << " " << lio_q.x()
-                << " " << lio_q.y() << " " << lio_q.z() << " " << lio_q.w()
+  // Step 6: Save trajectory and ocds
+  {
+    odom_stream << std::fixed
+                << std::setprecision(6)
+                << sensor_measurement.bag_time_ << " "
+                << std::setprecision(15) 
+                << result_pose(0, 0) << " " << result_pose(0, 1) << " " << result_pose(0, 2) << " " << result_pose(0, 3) << " "
+                << result_pose(1, 0) << " " << result_pose(1, 1) << " " << result_pose(1, 2) << " " << result_pose(1, 3) << " "
+                << result_pose(2, 0) << " " << result_pose(2, 1) << " " << result_pose(2, 2) << " " << result_pose(2, 3)
                 << std::endl;
-  } else {
-    delay_count++;
+
+    pcl::io::savePCDFileBinary((pcd_path / std::to_string(sensor_measurement.bag_time_)).string() + ".pcd", *sensor_measurement.cloud_ptr_);
   }
 }
 
@@ -683,28 +685,37 @@ int main(int argc, char** argv) {
   lio_config.max_radius = max_radius;
 
   lio_config.T_imu_lidar = T_imu_lidar;
-
+  
+  // allocate memory
   lio_ptr = std::make_shared<LIO>(lio_config);
-
+  global_cloud.reset(new CloudType());
+  
   // init ros topic
   odom_pub = nh.advertise<nav_msgs::Odometry>("/lio_odom", 10000);
   current_scan_pub =
       nh.advertise<sensor_msgs::PointCloud2>("current_scan", 10000);
   keyframe_scan_pub =
       nh.advertise<sensor_msgs::PointCloud2>("keyframe_scan", 10000);
-  path_pub = nh.advertise<nav_msgs::Path>("/path", 10000, true);
+  path_pub = nh.advertise<nav_msgs::Path>("/path", 10000, true);  
+  savemap_srv = nh.advertiseService("/ig_lio_node/save_map", saveMapService);
 
   voxel_filter.setLeafSize(0.5, 0.5, 0.5);
 
-  // save trajectory
-  fs::path result_path = fs::path(package_path) / "result" / "lio_odom.txt";
+  // save trajectory and pcds
+  fs::path result_path = fs::path(package_path) / "result";
   if (!fs::exists(result_path.parent_path())) {
     fs::create_directories(result_path.parent_path());	
   }
 
-  odom_stream.open(result_path, std::ios::out);
+  pcd_path = result_path / "pcds";
+  if (!fs::exists(pcd_path)) {
+    fs::create_directories(pcd_path);
+  }
+
+  fs::path odom_path = result_path / "lio_odom.txt";
+  odom_stream.open(odom_path, std::ios::out);
   if (!odom_stream.is_open()) {
-    LOG(ERROR) << "failed to open: " << result_path;
+    LOG(ERROR) << "failed to open: " << odom_path;
     exit(0);
   }
 
