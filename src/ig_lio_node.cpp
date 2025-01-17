@@ -519,8 +519,8 @@ void Process() {
   // Step 6: Save trajectory and ocds
   {
     odom_stream << std::fixed
-                << std::setprecision(6)
-                << sensor_measurement.bag_time_ << " "
+                // << std::setprecision(6)
+                // << sensor_measurement.bag_time_ << " "
                 << std::setprecision(15) 
                 << result_pose(0, 0) << " " << result_pose(0, 1) << " " << result_pose(0, 2) << " " << result_pose(0, 3) << " "
                 << result_pose(1, 0) << " " << result_pose(1, 1) << " " << result_pose(1, 2) << " " << result_pose(1, 3) << " "
