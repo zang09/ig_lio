@@ -731,5 +731,12 @@ int main(int argc, char** argv) {
     rate.sleep();
   }
 
+  ig_lio::save_mapRequest req;
+  ig_lio::save_mapResponse res;
+  
+  if(!saveMapService(req, res)){
+    std::cout << "Fail to save global map" << std::endl;
+  }
+
   timer.PrintAll();
 }
